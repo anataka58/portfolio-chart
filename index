@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <title>Portfolio Dashboard</title>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+      background: #f3f4f6;
+      color: #111827;
+    }
+
+    h1 {
+      margin-top: 0;
+      font-size: 28px;
+    }
+
+    h2 {
+      margin-top: 32px;
+      font-size: 22px;
+    }
+
+    .container {
+      max-width: 960px;
+      margin: 0 auto;
+    }
+
+    .card {
+      background: #ffffff;
+      border-radius: 18px;
+      padding: 24px;
+      margin-bottom: 24px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.08);
+    }
+
+    .chart-box {
+      max-width: 640px;
+      margin: 0 auto;
+    }
+
+    canvas {
+      width: 100%;
+      max-height: 420px;
+    }
+
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+
+    .summary-item {
+      background: #ffffff;
+      border-radius: 16px;
+      padding: 18px;
+      box-shadow: 0 6px 18px rgba(0,0,0,0.06);
+    }
+
+    .summary-label {
+      font-size: 14px;
+      color: #6b7280;
+      margin-bottom: 8px;
+    }
+
+    .summary-value {
+      font-size: 24px;
+      font-weight: 700;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 16px;
+      font-size: 14px;
+    }
+
+    th, td {
+      padding: 10px;
+      border-bottom: 1px solid #e5e7eb;
+      text-align: left;
+    }
+
+    th {
+      background: #f9fafb;
+      font-weight: 600;
+    }
+
+    td.number {
+      text-align: right;
+    }
+
+    .error {
+      color: #b91c1c;
+      font-weight: 600;
+    }
+
+    @media (max-width: 600px) {
+      body {
+        padding: 12px;
+      }
+
+      .card {
+        padding: 16px;
+      }
+
+      h1 {
+        font-size: 24px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <h1>Portfolio Dashboard</h1>
+
+    <div class="summary">
+      <div class="summary-item">
+        <div class="summary-label">総評価額</div>
+        <div class="summary-value" id="totalValue">-</div>
+      </div>
+
+      <div class="summary-item">
+        <div class="summary-label">総元本</div>
+        <div class="summary-value" id="totalPrincipal">-</div>
+      </div>
+
+      <div class="summary-item">
+        <div class="summary-label">評価損益</div>
+        <div class="summary-value" id="totalProfit">-</div>
+      </div>
+
+      <div class="summary-item">
+        <div class="summary-label">損益率</div>
+        <div class="summary-value" id="profitRate">-</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>銘柄別ポートフォリオ</h2>
+      <div class="chart-box">
+        <canvas id="assetChart"></canvas>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>分類別ポートフォリオ</h2>
+      <div class="chart-box">
+        <canvas id="categoryChart"></canvas>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>保有資産一覧</h2>
+      <div id="tableArea"></div>
+    </div>
+
+    <div id="errorArea"></div>
+  </div>
+
+  <script>
+    const csvUrl = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR9SDoiplc1DQKG-tnbY9evNEYM9aVXapzwuB8FsfbVCHRdjLLEFYgb6bpqDa8wACGXrsYy5xI7NbCi/pub?gid=0&single=true&output=csv";
+
+    let assetChart = null;
+    let categoryChart = null;
+
+    async function loadPortfolio() {
+      try {
+        const response = await fetch(csvUrl);
+
+        if (!response.ok) {
+          throw new Error("CSVの読み込みに失敗しました");
+        }
+
+        const csvText = await response.text();
+        const rows = parseCsv(csvText);
+
+        if (rows.length < 2) {
+          throw new Error("CSVにデータがありません");
+        }
+
+        const headers = rows[0].map(header => header.trim());
+
+        const assetNameIndex = findColumn(headers, ["asset_name", "銘柄名", "name"]);
+        const categoryIndex = findColumn(headers, ["category", "分類", "asset_category"]);
+        const currentValueIndex = findColumn(headers, ["current_value", "評価額", "評価額"]);
+        const principalIndex = findColumn(headers, ["principal", "元本", "取得額"]);
+
+        if (assetNameIndex === -1 || categoryIndex === -1 || currentValueIndex === -1 || principalIndex === -1) {
+          throw new Error("必要な列が見つかりません。asset_name, category, current_value, principal の列が必要です。");
+        }
+
+        const portfolio = [];
+
+        for (let i = 1; i < rows.length; i++) {
+          const row = rows[i];
+
+          const assetName = row[assetNameIndex]?.trim();
+          const category = row[categoryIndex]?.trim();
+          const currentValue = toNumber(row[currentValueIndex]);
+          const principal = toNumber(row[principalIndex]);
+
+          if (!assetName || !category) {
+            continue;
+          }
+
+          portfolio.push({
+            assetName,
+            category,
+            currentValue,
+            principal
+          });
+        }
+
+        renderDashboard(portfolio);
+
+      } catch (error) {
+        showError(error.message);
+      }
+    }
+
+    function findColumn(headers, candidates) {
+      for (const candidate of candidates) {
+        const index = headers.indexOf(candidate);
+        if (index !== -1) {
+          return index;
+        }
+      }
+      return -1;
+    }
+
+    function toNumber(value) {
+      if (value === undefined || value === null) {
+        return 0;
+      }
+
+      const cleaned = String(value)
+        .replace(/,/g, "")
+        .replace(/円/g, "")
+        .replace(/¥/g, "")
+        .trim();
+
+      const number = Number(cleaned);
+
+      if (Number.isNaN(number)) {
+        return 0;
+      }
+
+      return number;
+    }
+
+    function parseCsv(text) {
+      const rows = [];
+      let row = [];
+      let cell = "";
+      let inQuotes = false;
+
+      for (let i = 0; i < text.length; i++) {
+        const char = text[i];
+        const nextChar = text[i + 1];
+
+        if (char === '"' && inQuotes && nextChar === '"') {
+          cell += '"';
+          i++;
+        } else if (char === '"') {
+          inQuotes = !inQuotes;
+        } else if (char === "," && !inQuotes) {
+          row.push(cell);
+          cell = "";
+        } else if ((char === "\n" || char === "\r") && !inQuotes) {
+          if (cell !== "" || row.length > 0) {
+            row.push(cell);
+            rows.push(row);
+            row = [];
+            cell = "";
+          }
+
+          if (char === "\r" && nextChar === "\n") {
+            i++;
+          }
+        } else {
+          cell += char;
+        }
+      }
+
+      if (cell !== "" || row.length > 0) {
+        row.push(cell);
+        rows.push(row);
+      }
+
+      return rows;
+    }
+
+    function renderDashboard(portfolio) {
+      const totalCurrentValue = portfolio.reduce((sum, item) => sum + item.currentValue, 0);
+      const totalPrincipal = portfolio.reduce((sum, item) => sum + item.principal, 0);
+      const totalProfit = totalCurrentValue - totalPrincipal;
+      const profitRate = totalPrincipal === 0 ? 0 : totalProfit / totalPrincipal * 100;
+
+      document.getElementById("totalValue").textContent = formatYen(totalCurrentValue);
+      document.getElementById("totalPrincipal").textContent = formatYen(totalPrincipal);
+      document.getElementById("totalProfit").textContent = formatYen(totalProfit);
+      document.getElementById("profitRate").textContent = profitRate.toFixed(2) + "%";
+
+      const assetLabels = portfolio.map(item => item.assetName);
+      const assetValues = portfolio.map(item => item.currentValue);
+
+      const categoryTotals = {};
+
+      portfolio.forEach(item => {
+        if (!categoryTotals[item.category]) {
+          categoryTotals[item.category] = 0;
+        }
+
+        categoryTotals[item.category] += item.currentValue;
+      });
+
+      const categoryLabels = Object.keys(categoryTotals);
+      const categoryValues = Object.values(categoryTotals);
+
+      drawPieChart("assetChart", assetLabels, assetValues, "銘柄別評価額");
+      drawPieChart("categoryChart", categoryLabels, categoryValues, "分類別評価額");
+
+      renderTable(portfolio, totalCurrentValue);
+    }
+
+    function drawPieChart(canvasId, labels, values, title) {
+      const canvas = document.getElementById(canvasId);
+
+      if (canvasId === "assetChart" && assetChart !== null) {
+        assetChart.destroy();
+      }
+
+      if (canvasId === "categoryChart" && categoryChart !== null) {
+        categoryChart.destroy();
+      }
+
+      const chart = new Chart(canvas, {
+        type: "pie",
+        data: {
+          labels: labels,
+          datasets: [{
+            label: title,
+            data: values
+          }]
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            legend: {
+              position: "bottom"
+            },
+            tooltip: {
+              callbacks: {
+                label: function(context) {
+                  const total = values.reduce((sum, value) => sum + value, 0);
+                  const value = context.raw;
+                  const percentage = total === 0 ? 0 : value / total * 100;
+
+                  return `${context.label}: ${formatYen(value)} (${percentage.toFixed(1)}%)`;
+                }
+              }
+            }
+          }
+        }
+      });
+
+      if (canvasId === "assetChart") {
+        assetChart = chart;
+      }
+
+      if (canvasId === "categoryChart") {
+        categoryChart = chart;
+      }
+    }
+
+    function renderTable(portfolio, totalCurrentValue) {
+      let html = "";
+
+      html += "<table>";
+      html += "<thead>";
+      html += "<tr>";
+      html += "<th>銘柄名</th>";
+      html += "<th>分類</th>";
+      html += "<th>評価額</th>";
+      html += "<th>元本</th>";
+      html += "<th>損益</th>";
+      html += "<th>比率</th>";
+      html += "</tr>";
+      html += "</thead>";
+      html += "<tbody>";
+
+      portfolio.forEach(item => {
+        const profit = item.currentValue - item.principal;
+        const percentage = totalCurrentValue === 0 ? 0 : item.currentValue / totalCurrentValue * 100;
+
+        html += "<tr>";
+        html += `<td>${escapeHtml(item.assetName)}</td>`;
+        html += `<td>${escapeHtml(item.category)}</td>`;
+        html += `<td class="number">${formatYen(item.currentValue)}</td>`;
+        html += `<td class="number">${formatYen(item.principal)}</td>`;
+        html += `<td class="number">${formatYen(profit)}</td>`;
+        html += `<td class="number">${percentage.toFixed(1)}%</td>`;
+        html += "</tr>";
+      });
+
+      html += "</tbody>";
+      html += "</table>";
+
+      document.getElementById("tableArea").innerHTML = html;
+    }
+
+    function formatYen(value) {
+      return value.toLocaleString("ja-JP", {
+        style: "currency",
+        currency: "JPY",
+        maximumFractionDigits: 0
+      });
+    }
+
+    function escapeHtml(text) {
+      return String(text)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    function showError(message) {
+      document.getElementById("errorArea").innerHTML = `
+        <div class="card error">
+          エラー：${escapeHtml(message)}
+        </div>
+      `;
+    }
+
+    loadPortfolio();
+  </script>
+</body>
+</html>
